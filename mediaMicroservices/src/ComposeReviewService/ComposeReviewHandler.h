@@ -5,6 +5,8 @@
 #include <string>
 #include <chrono>
 #include <future>
+#include <thread>
+#include <cstdlib>
 
 #include <libmemcached/memcached.h>
 #include <libmemcached/util.h>
@@ -56,7 +58,9 @@ class ComposeReviewHandler : public ComposeReviewServiceIf {
       *_user_review_client_pool;
   ClientPool<ThriftClient<MovieReviewServiceClient>>
       *_movie_review_client_pool;
+  int _extra_latency_ms;
   void _ComposeAndUpload(int64_t, const std::map<std::string, std::string> &);
+  int _ParseExtraLatency();
 };
 
 ComposeReviewHandler::ComposeReviewHandler(
@@ -71,10 +75,47 @@ ComposeReviewHandler::ComposeReviewHandler(
   _review_storage_client_pool = review_storage_client_pool;
   _user_review_client_pool = user_review_client_pool;
   _movie_review_client_pool = movie_review_client_pool;
+  _extra_latency_ms = _ParseExtraLatency();
+}
+
+int ComposeReviewHandler::_ParseExtraLatency() {
+  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
+  if (extra_latency_env == nullptr) {
+    return 0;
+  }
+  
+  std::string latency_str(extra_latency_env);
+  
+  // Remove "ms" suffix if present
+  if (latency_str.length() >= 2 && 
+      latency_str.substr(latency_str.length() - 2) == "ms") {
+    latency_str = latency_str.substr(0, latency_str.length() - 2);
+  }
+  
+  try {
+    int latency_ms = std::stoi(latency_str);
+    if (latency_ms < 0) {
+      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
+      return 0;
+    }
+    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
+    return latency_ms;
+  } catch (const std::exception& e) {
+    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
+                 << ", setting to 0";
+    return 0;
+  }
 }
 
 void ComposeReviewHandler::_ComposeAndUpload(
     int64_t req_id, const std::map<std::string, std::string> &writer_text_map) {
+
+  // Apply extra latency if configured
+  if (_extra_latency_ms > 0) {
+    LOG(debug) << "Adding extra latency of " << _extra_latency_ms 
+               << "ms for request " << req_id;
+    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
+  }
 
   std::string key_unique_id = std::to_string(req_id) + ":review_id";
   std::string key_movie_id = std::to_string(req_id) + ":movie_id";

@@ -3,8 +3,12 @@
 
 #include <iostream>
 #include <string>
+#include <thread>
+#include <cstdlib>
 
 #include <mongoc.h>
+#include <libmemcached/memcached.h>
+#include <libmemcached/util.h>
 #include <bson/bson.h>
 
 #include "../../gen-cpp/UserReviewService.h"
@@ -19,9 +23,8 @@ namespace media_service {
 class UserReviewHandler : public UserReviewServiceIf {
  public:
   UserReviewHandler(
-      ClientPool<RedisClient> *,
-      mongoc_client_pool_t *,
-      ClientPool<ThriftClient<ReviewStorageServiceClient>> *);
+      memcached_pool_st *,
+      mongoc_client_pool_t *);
   ~UserReviewHandler() override = default;
   void UploadUserReview(int64_t, int64_t, int64_t, int64_t,
                          const std::map<std::string, std::string> &) override;
@@ -30,26 +33,59 @@ class UserReviewHandler : public UserReviewServiceIf {
                         const std::map<std::string, std::string> & carrier) override;
 
  private:
-  ClientPool<RedisClient> *_redis_client_pool;
+  memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
-  ClientPool<ThriftClient<ReviewStorageServiceClient>> *_review_client_pool;
+  int _extra_latency_ms;
+  int _ParseExtraLatency();
 };
 
 UserReviewHandler::UserReviewHandler(
-    ClientPool<RedisClient> *redis_client_pool,
-    mongoc_client_pool_t *mongodb_pool,
-    ClientPool<ThriftClient<ReviewStorageServiceClient>> *review_storage_client_pool) {
-  _redis_client_pool = redis_client_pool;
-  _mongodb_client_pool = mongodb_pool;
-  _review_client_pool = review_storage_client_pool;
+    memcached_pool_st *memcached_client_pool,
+    mongoc_client_pool_t *mongodb_client_pool) {
+  _memcached_client_pool = memcached_client_pool;
+  _mongodb_client_pool = mongodb_client_pool;
+  _extra_latency_ms = _ParseExtraLatency();
+}
+
+int UserReviewHandler::_ParseExtraLatency() {
+  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
+  if (extra_latency_env == nullptr) {
+    return 0;
+  }
+  
+  std::string latency_str(extra_latency_env);
+  
+  // Remove "ms" suffix if present
+  if (latency_str.length() >= 2 && 
+      latency_str.substr(latency_str.length() - 2) == "ms") {
+    latency_str = latency_str.substr(0, latency_str.length() - 2);
+  }
+  
+  try {
+    int latency_ms = std::stoi(latency_str);
+    if (latency_ms < 0) {
+      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
+      return 0;
+    }
+    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
+    return latency_ms;
+  } catch (const std::exception& e) {
+    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
+                 << ", setting to 0";
+    return 0;
+  }
 }
 
 void UserReviewHandler::UploadUserReview(
-    int64_t req_id,
-    int64_t user_id,
-    int64_t review_id,
-    int64_t timestamp,
-    const std::map<std::string, std::string> &carrier) {
+    int64_t req_id, int64_t user_id, int64_t review_id,
+    int64_t timestamp, const std::map<std::string, std::string> & carrier) {
+
+  // Apply extra latency if configured
+  if (_extra_latency_ms > 0) {
+    LOG(debug) << "Adding extra latency of " << _extra_latency_ms 
+               << "ms for request " << req_id;
+    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
+  }
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -157,7 +193,7 @@ void UserReviewHandler::UploadUserReview(
   mongoc_collection_destroy(collection);
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
-  auto redis_client_wrapper = _redis_client_pool->Pop();
+  auto redis_client_wrapper = _memcached_client_pool->pop();
   if (!redis_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
@@ -177,7 +213,7 @@ void UserReviewHandler::UploadUserReview(
     redis_client->zadd(std::to_string(user_id), options, value);
     redis_client->sync_commit();
   }
-  _redis_client_pool->Push(redis_client_wrapper);
+  _memcached_client_pool->push(redis_client_wrapper);
   redis_span->Finish();
   span->Finish();
 }
@@ -201,7 +237,7 @@ void UserReviewHandler::ReadUserReviews(
     return;
   }
 
-  auto redis_client_wrapper = _redis_client_pool->Pop();
+  auto redis_client_wrapper = _memcached_client_pool->pop();
   if (!redis_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
@@ -221,10 +257,10 @@ void UserReviewHandler::ReadUserReviews(
     review_ids_reply = review_ids_future.get();
   } catch (...) {
     LOG(error) << "Failed to read review_ids from user-review-redis";
-    _redis_client_pool->Push(redis_client_wrapper);
+    _memcached_client_pool->push(redis_client_wrapper);
     throw;
   }
-  _redis_client_pool->Push(redis_client_wrapper);
+  _memcached_client_pool->push(redis_client_wrapper);
   std::vector<int64_t> review_ids;
   auto review_ids_reply_array = review_ids_reply.as_array();
   for (auto &review_id_reply : review_ids_reply_array) {
@@ -328,7 +364,7 @@ void UserReviewHandler::ReadUserReviews(
   std::future<cpp_redis::reply> zadd_reply_future;
   if (!redis_update_map.empty()) {
     // Update Redis
-    redis_client_wrapper = _redis_client_pool->Pop();
+    redis_client_wrapper = _memcached_client_pool->pop();
     if (!redis_client_wrapper) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
@@ -356,7 +392,7 @@ void UserReviewHandler::ReadUserReviews(
       } catch (...) {
         LOG(error) << "Failed to Update Redis Server";
       }
-      _redis_client_pool->Push(redis_client_wrapper);
+      _memcached_client_pool->push(redis_client_wrapper);
     }
     throw;
   }
@@ -366,10 +402,10 @@ void UserReviewHandler::ReadUserReviews(
       zadd_reply_future.get();
     } catch (...) {
       LOG(error) << "Failed to Update Redis Server";
-      _redis_client_pool->Push(redis_client_wrapper);
+      _memcached_client_pool->push(redis_client_wrapper);
       throw;
     }
-    _redis_client_pool->Push(redis_client_wrapper);
+    _memcached_client_pool->push(redis_client_wrapper);
   }
 
   span->Finish();
