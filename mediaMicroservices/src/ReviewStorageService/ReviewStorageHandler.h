@@ -5,6 +5,10 @@
 #include <string>
 #include <thread>
 #include <cstdlib>
+#include <future>         // <-- Add this line for std::future, std::async
+#include <chrono>         // <-- Add this line for std::chrono::milliseconds
+#include <cstring>        // <-- Add this for strcpy
+#include <iterator>       // <-- Add this for std::begin and std::end
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>

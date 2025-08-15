@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-sleep-pod
+  namespace: default
+spec:
+  containers:
+  - name: sleeper
+    image: ubuntu:latest
+    command: ["/bin/bash", "-c"]
+    args: ["apt-get update && apt-get install -y curl && sleep infinity"]

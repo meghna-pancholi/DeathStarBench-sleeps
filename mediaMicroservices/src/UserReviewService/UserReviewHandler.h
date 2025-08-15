@@ -5,6 +5,10 @@
 #include <string>
 #include <thread>
 #include <cstdlib>
+#include <future>
+#include <chrono>
+#include <cstring>
+#include <iterator>
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>
@@ -24,7 +28,8 @@ class UserReviewHandler : public UserReviewServiceIf {
  public:
   UserReviewHandler(
       memcached_pool_st *,
-      mongoc_client_pool_t *);
+      mongoc_client_pool_t *,
+      ClientPool<ReviewStorageServiceClient> *);
   ~UserReviewHandler() override = default;
   void UploadUserReview(int64_t, int64_t, int64_t, int64_t,
                          const std::map<std::string, std::string> &) override;
@@ -35,15 +40,18 @@ class UserReviewHandler : public UserReviewServiceIf {
  private:
   memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
+  ClientPool<ReviewStorageServiceClient> *_review_client_pool; // Added
   int _extra_latency_ms;
   int _ParseExtraLatency();
 };
 
 UserReviewHandler::UserReviewHandler(
     memcached_pool_st *memcached_client_pool,
-    mongoc_client_pool_t *mongodb_client_pool) {
+    mongoc_client_pool_t *mongodb_client_pool,
+    ClientPool<ReviewStorageServiceClient> *review_client_pool) {
   _memcached_client_pool = memcached_client_pool;
   _mongodb_client_pool = mongodb_client_pool;
+  _review_client_pool = review_client_pool; // Initialized
   _extra_latency_ms = _ParseExtraLatency();
 }
 
@@ -124,6 +132,7 @@ void UserReviewHandler::UploadUserReview(
       collection, query, nullptr, nullptr);
   const bson_t *doc;
   bool found = mongoc_cursor_next(cursor, &doc);
+  find_span->Finish(); // moved finish here
   if (!found) {
     bson_t *new_doc = BCON_NEW(
         "user_id", BCON_INT64(user_id),
@@ -203,16 +212,12 @@ void UserReviewHandler::UploadUserReview(
   auto redis_client = redis_client_wrapper->GetClient();
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisUpdate", {opentracing::ChildOf(&span->context())});
-  auto num_reviews = redis_client->zcard(std::to_string(user_id));
-  redis_client->sync_commit();
-  auto num_reviews_reply = num_reviews.get();
-  std::vector<std::string> options{"NX"};
-  if (num_reviews_reply.ok() && num_reviews_reply.as_integer()) {
-    std::multimap<std::string, std::string> value = {{
+  std::vector<std::string> options;
+  std::map<std::string, std::string> value = {{
       std::to_string(timestamp), std::to_string(review_id)}};
-    redis_client->zadd(std::to_string(user_id), options, value);
-    redis_client->sync_commit();
-  }
+  redis_client->zadd(std::to_string(user_id), options, value);
+  redis_client->sync_commit();
+
   _memcached_client_pool->push(redis_client_wrapper);
   redis_span->Finish();
   span->Finish();
@@ -250,6 +255,7 @@ void UserReviewHandler::ReadUserReviews(
   auto review_ids_future = redis_client->zrevrange(
       std::to_string(user_id), start, stop - 1);
   redis_client->commit();
+  _memcached_client_pool->push(redis_client_wrapper);
   redis_span->Finish();
 
   cpp_redis::reply review_ids_reply;
@@ -257,10 +263,9 @@ void UserReviewHandler::ReadUserReviews(
     review_ids_reply = review_ids_future.get();
   } catch (...) {
     LOG(error) << "Failed to read review_ids from user-review-redis";
-    _memcached_client_pool->push(redis_client_wrapper);
     throw;
   }
-  _memcached_client_pool->push(redis_client_wrapper);
+  
   std::vector<int64_t> review_ids;
   auto review_ids_reply_array = review_ids_reply.as_array();
   for (auto &review_id_reply : review_ids_reply_array) {
@@ -285,6 +290,7 @@ void UserReviewHandler::ReadUserReviews(
       ServiceException se;
       se.errorCode = ErrorCode::SE_MONGODB_ERROR;
       se.message = "Failed to create collection user-review from MongoDB";
+      mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
       throw se;
     }
 
@@ -303,34 +309,41 @@ void UserReviewHandler::ReadUserReviews(
     const bson_t *doc;
     bool found = mongoc_cursor_next(cursor, &doc);
     if (found) {
-      bson_iter_t iter_0;
-      bson_iter_t iter_1;
-      bson_iter_t review_id_child;
-      bson_iter_t timestamp_child;
-      int idx = 0;
-      bson_iter_init(&iter_0, doc);
-      bson_iter_init(&iter_1, doc);
-      while (bson_iter_find_descendant(&iter_0,
-          ("reviews." + std::to_string(idx) + ".review_id").c_str(),
-          &review_id_child)
-          && BSON_ITER_HOLDS_INT64(&review_id_child)
-          && bson_iter_find_descendant(&iter_1,
-              ("reviews." + std::to_string(idx) + ".timestamp").c_str(),
-              &timestamp_child)
-          && BSON_ITER_HOLDS_INT64(&timestamp_child)) {
-        auto curr_review_id = bson_iter_int64(&review_id_child);
-        auto curr_timestamp = bson_iter_int64(&timestamp_child);
-        if (idx >= mongo_start) {
-          review_ids.emplace_back(curr_review_id);
-        }
-        redis_update_map.insert(
-            {std::to_string(curr_timestamp), std::to_string(curr_review_id)});
-        bson_iter_init(&iter_0, doc);
-        bson_iter_init(&iter_1, doc);
-        idx++;
+      bson_iter_t iter;
+      if (bson_iter_init(&iter, doc) && bson_iter_find_descendant(&iter, "reviews", &iter)) {
+          if (BSON_ITER_HOLDS_ARRAY(&iter)) {
+            bson_iter_t array_iter;
+            if (bson_iter_init(&array_iter, doc) && bson_iter_find_descendant(&array_iter, "reviews", &array_iter)) {
+              int idx = 0;
+              while (bson_iter_next(&array_iter)) {
+                bson_iter_t review_id_child;
+                bson_iter_t timestamp_child;
+                
+                if (BSON_ITER_HOLDS_DOCUMENT(&array_iter)) {
+                    const bson_t *review_doc;
+                    bson_iter_document(&array_iter, &review_doc);
+
+                    bson_iter_init(&review_id_child, review_doc);
+                    bson_iter_init(&timestamp_child, review_doc);
+
+                    if (bson_iter_find(&review_id_child, "review_id") && BSON_ITER_HOLDS_INT64(&review_id_child)
+                        && bson_iter_find(&timestamp_child, "timestamp") && BSON_ITER_HOLDS_INT64(&timestamp_child)) {
+                        auto curr_review_id = bson_iter_int64(&review_id_child);
+                        auto curr_timestamp = bson_iter_int64(&timestamp_child);
+                        if (idx >= start) {
+                            review_ids.emplace_back(curr_review_id);
+                        }
+                        redis_update_map.insert(
+                            {std::to_string(curr_timestamp), std::to_string(curr_review_id)});
+                    }
+                }
+                idx++;
+              }
+            }
+          }
       }
     }
-    find_span->Finish();
+    
     bson_destroy(opts);
     bson_destroy(query);
     mongoc_cursor_destroy(cursor);
@@ -375,10 +388,11 @@ void UserReviewHandler::ReadUserReviews(
     auto redis_update_span = opentracing::Tracer::Global()->StartSpan(
         "RedisUpdate", {opentracing::ChildOf(&span->context())});
     redis_client->del(std::vector<std::string>{std::to_string(user_id)});
-    std::vector<std::string> options{"NX"};
+    std::vector<std::string> options;
     zadd_reply_future = redis_client->zadd(
         std::to_string(user_id), options, redis_update_map);
     redis_client->commit();
+    _memcached_client_pool->push(redis_client_wrapper);
     redis_update_span->Finish();
   }
 
@@ -392,7 +406,6 @@ void UserReviewHandler::ReadUserReviews(
       } catch (...) {
         LOG(error) << "Failed to Update Redis Server";
       }
-      _memcached_client_pool->push(redis_client_wrapper);
     }
     throw;
   }
@@ -402,16 +415,11 @@ void UserReviewHandler::ReadUserReviews(
       zadd_reply_future.get();
     } catch (...) {
       LOG(error) << "Failed to Update Redis Server";
-      _memcached_client_pool->push(redis_client_wrapper);
       throw;
     }
-    _memcached_client_pool->push(redis_client_wrapper);
   }
 
   span->Finish();
-
 }
 
-}// namespace media_service
-
-#endif //MEDIA_MICROSERVICES_USERREVIEWHANDLER_H
+} // namespace media_service

@@ -10,6 +10,7 @@ container:
   name: movie-id-service
   ports:
     - containerPort: 9090
+  extraLatencyMs: 0
 
 configMaps:
   - name: jaeger-config.yml

@@ -32,6 +32,10 @@ spec:
           value: "{{ (tpl ($e.value | toString) $) }}"
         {{ end -}}
         {{ end -}}
+        {{- if .extraLatencyMs }}
+        - name: EXTRA_LATENCY
+          value: "{{ .extraLatencyMs }}ms"
+        {{- end }}
         {{- if .command}}
         command:
         - {{ .command }}
