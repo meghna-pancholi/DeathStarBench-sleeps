@@ -1,14 +1,9 @@
-#ifndef MEDIA_MICROSERVICES_REVIEWSTORAGEHANDLER_H
-#define MEDIA_MICROSERVICES_REVIEWSTORAGEHANDLER_H
+#ifndef MEDIA_MICROSERVICES_REVIEWSTOREHANDLER_H
+#define MEDIA_MICROSERVICES_REVIEWSTOREHANDLER_H
 
 #include <iostream>
 #include <string>
-#include <thread>
-#include <cstdlib>
-#include <future>         // <-- Add this line for std::future, std::async
-#include <chrono>         // <-- Add this line for std::chrono::milliseconds
-#include <cstring>        // <-- Add this for strcpy
-#include <iterator>       // <-- Add this for std::begin and std::end
+#include <future>
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>
@@ -18,64 +13,31 @@
 #include "../../gen-cpp/ReviewStorageService.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include "../utils.h"
 
 namespace media_service {
 
-class ReviewStorageHandler : public ReviewStorageServiceIf {
+class ReviewStorageHandler : public ReviewStorageServiceIf{
  public:
-  ReviewStorageHandler(
-      memcached_pool_st *,
-      mongoc_client_pool_t *);
+  ReviewStorageHandler(memcached_pool_st *, mongoc_client_pool_t *);
   ~ReviewStorageHandler() override = default;
-
-  void StoreReview(int64_t req_id, const Review& review,
-      const std::map<std::string, std::string> & carrier) override;
-  void ReadReviews(std::vector<Review>& _return, int64_t req_id,
-      const std::vector<int64_t> & review_ids,
-      const std::map<std::string, std::string> & carrier) override;
-
+  void StoreReview(int64_t, const Review &, 
+      const std::map<std::string, std::string> &) override;
+  void ReadReviews(std::vector<Review> &, int64_t, const std::vector<int64_t> &,
+                   const std::map<std::string, std::string> &) override;
+  
  private:
   memcached_pool_st *_memcached_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
   int _extra_latency_ms;
-  int _ParseExtraLatency();
 };
 
 ReviewStorageHandler::ReviewStorageHandler(
-    memcached_pool_st *memcached_client_pool,
-    mongoc_client_pool_t *mongodb_client_pool) {
-  _memcached_client_pool = memcached_client_pool;
-  _mongodb_client_pool = mongodb_client_pool;
-  _extra_latency_ms = _ParseExtraLatency();
-}
-
-int ReviewStorageHandler::_ParseExtraLatency() {
-  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
-  if (extra_latency_env == nullptr) {
-    return 0;
-  }
-  
-  std::string latency_str(extra_latency_env);
-  
-  // Remove "ms" suffix if present
-  if (latency_str.length() >= 2 && 
-      latency_str.substr(latency_str.length() - 2) == "ms") {
-    latency_str = latency_str.substr(0, latency_str.length() - 2);
-  }
-  
-  try {
-    int latency_ms = std::stoi(latency_str);
-    if (latency_ms < 0) {
-      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
-      return 0;
-    }
-    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
-    return latency_ms;
-  } catch (const std::exception& e) {
-    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
-                 << ", setting to 0";
-    return 0;
-  }
+    memcached_pool_st *memcached_pool,
+    mongoc_client_pool_t *mongodb_pool) {
+  _memcached_client_pool = memcached_pool;
+  _mongodb_client_pool = mongodb_pool;
+  _extra_latency_ms = ParseExtraLatency();
 }
 
 void ReviewStorageHandler::StoreReview(
@@ -84,11 +46,7 @@ void ReviewStorageHandler::StoreReview(
     const std::map<std::string, std::string> & carrier) {
 
   // Apply extra latency if configured
-  if (_extra_latency_ms > 0) {
-    LOG(debug) << "Adding extra latency of " << _extra_latency_ms 
-               << "ms for request " << req_id;
-    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
-  }
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -160,11 +118,7 @@ void ReviewStorageHandler::ReadReviews(
     const std::map<std::string, std::string> &carrier) {
 
   // Apply extra latency if configured
-  if (_extra_latency_ms > 0) {
-    LOG(debug) << "Adding extra latency of " << _extra_latency_ms 
-               << "ms for request " << req_id;
-    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
-  }
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -409,4 +363,4 @@ void ReviewStorageHandler::ReadReviews(
 } // namespace media_service
 
 
-#endif //MEDIA_MICROSERVICES_REVIEWSTORAGEHANDLER_H
+#endif //MEDIA_MICROSERVICES_REVIEWSTOREHANDLER_H

@@ -1,27 +1,20 @@
-#ifndef MEDIA_MICROSERVICES_PAGEHANDLER_H
-#define MEDIA_MICROSERVICES_PAGEHANDLER_H
+#ifndef MEDIA_MICROSERVICES_SRC_COMPOSEPAGESERVICE_COMPOSEPAGEHANDLER_H_
+#define MEDIA_MICROSERVICES_SRC_COMPOSEPAGESERVICE_COMPOSEPAGEHANDLER_H_
 
 #include <iostream>
 #include <string>
-#include <thread>
-#include <cstdlib>
-
-#include <mongoc.h>
-#include <libmemcached/memcached.h>
-#include <libmemcached/util.h>
-#include <bson/bson.h>
+#include <future>
 
 #include "../../gen-cpp/PageService.h"
 #include "../../gen-cpp/MovieReviewService.h"
 #include "../../gen-cpp/MovieInfoService.h"
 #include "../../gen-cpp/CastInfoService.h"
 #include "../../gen-cpp/PlotService.h"
-#include "../../gen-cpp/ReviewStorageService.h"
-#include "../../gen-cpp/UserService.h"
 #include "../logger.h"
 #include "../tracing.h"
 #include "../ClientPool.h"
 #include "../ThriftClient.h"
+#include "../utils.h"
 
 
 namespace media_service {
@@ -29,78 +22,34 @@ namespace media_service {
 class PageHandler : public PageServiceIf {
  public:
   PageHandler(
-      memcached_pool_st *,
-      mongoc_client_pool_t *,
+      ClientPool<ThriftClient<MovieReviewServiceClient>> *,
       ClientPool<ThriftClient<MovieInfoServiceClient>> *,
-      ClientPool<ThriftClient<UserServiceClient>> *,
       ClientPool<ThriftClient<CastInfoServiceClient>> *,
-      ClientPool<ThriftClient<PlotServiceClient>> *,
-      ClientPool<ThriftClient<ReviewStorageServiceClient>> *);
+      ClientPool<ThriftClient<PlotServiceClient>> *);
   ~PageHandler() override = default;
 
   void ReadPage(Page& _return, int64_t req_id, const std::string& movie_id,
-      int32_t start, int32_t stop,
-      const std::map<std::string, std::string> & carrier) override;
+                int32_t review_start, int32_t review_stop,
+                const std::map<std::string, std::string> & carrier) override;
 
  private:
-  memcached_pool_st *_memcached_client_pool;
-  mongoc_client_pool_t *_mongodb_client_pool;
+  ClientPool<ThriftClient<MovieReviewServiceClient>> *_movie_review_client_pool;
   ClientPool<ThriftClient<MovieInfoServiceClient>> *_movie_info_client_pool;
-  ClientPool<ThriftClient<UserServiceClient>> *_user_client_pool;
   ClientPool<ThriftClient<CastInfoServiceClient>> *_cast_info_client_pool;
   ClientPool<ThriftClient<PlotServiceClient>> *_plot_client_pool;
-  ClientPool<ThriftClient<ReviewStorageServiceClient>> *_review_storage_client_pool;
   int _extra_latency_ms;
-  int _ParseExtraLatency();
 };
-
 PageHandler::PageHandler(
-    memcached_pool_st *memcached_client_pool,
-    mongoc_client_pool_t *mongodb_client_pool,
+    ClientPool<ThriftClient<MovieReviewServiceClient>> *movie_review_client_pool,
     ClientPool<ThriftClient<MovieInfoServiceClient>> *movie_info_client_pool,
-    ClientPool<ThriftClient<UserServiceClient>> *user_client_pool,
     ClientPool<ThriftClient<CastInfoServiceClient>> *cast_info_client_pool,
-    ClientPool<ThriftClient<PlotServiceClient>> *plot_client_pool,
-    ClientPool<ThriftClient<ReviewStorageServiceClient>> *review_storage_client_pool) {
-  _memcached_client_pool = memcached_client_pool;
-  _mongodb_client_pool = mongodb_client_pool;
+    ClientPool<ThriftClient<PlotServiceClient>> *plot_client_pool) {
+  _movie_review_client_pool = movie_review_client_pool;
   _movie_info_client_pool = movie_info_client_pool;
-  _user_client_pool = user_client_pool;
   _cast_info_client_pool = cast_info_client_pool;
   _plot_client_pool = plot_client_pool;
-  _review_storage_client_pool = review_storage_client_pool;
-  _extra_latency_ms = _ParseExtraLatency();
+  _extra_latency_ms = ParseExtraLatency();
 }
-
-int PageHandler::_ParseExtraLatency() {
-  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
-  if (extra_latency_env == nullptr) {
-    return 0;
-  }
-  
-  std::string latency_str(extra_latency_env);
-  
-  // Remove "ms" suffix if present
-  if (latency_str.length() >= 2 && 
-      latency_str.substr(latency_str.length() - 2) == "ms") {
-    latency_str = latency_str.substr(0, latency_str.length() - 2);
-  }
-  
-  try {
-    int latency_ms = std::stoi(latency_str);
-    if (latency_ms < 0) {
-      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
-      return 0;
-    }
-    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
-    return latency_ms;
-  } catch (const std::exception& e) {
-    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
-                 << ", setting to 0";
-    return 0;
-  }
-}
-
 void PageHandler::ReadPage(
     Page &_return,
     int64_t req_id,
@@ -108,6 +57,9 @@ void PageHandler::ReadPage(
     int32_t review_start,
     int32_t review_stop,
     const std::map<std::string, std::string> &carrier) {
+
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -236,4 +188,4 @@ void PageHandler::ReadPage(
 } //namespace media_service
 
 
-#endif //MEDIA_MICROSERVICES_PAGEHANDLER_H
+#endif //MEDIA_MICROSERVICES_SRC_COMPOSEPAGESERVICE_COMPOSEPAGEHANDLER_H_

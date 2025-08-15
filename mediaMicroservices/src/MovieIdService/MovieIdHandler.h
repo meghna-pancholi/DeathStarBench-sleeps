@@ -4,8 +4,6 @@
 #include <iostream>
 #include <string>
 #include <future>
-#include <thread>
-#include <cstdlib>
 
 #include <mongoc.h>
 #include <libmemcached/memcached.h>
@@ -19,6 +17,7 @@
 #include "../ThriftClient.h"
 #include "../logger.h"
 #include "../tracing.h"
+#include "../utils.h"
 
 
 namespace media_service {
@@ -42,7 +41,6 @@ class MovieIdHandler : public MovieIdServiceIf {
   ClientPool<ThriftClient<ComposeReviewServiceClient>> *_compose_client_pool;
   ClientPool<ThriftClient<RatingServiceClient>> *_rating_client_pool;
   int _extra_latency_ms;
-  int _ParseExtraLatency();
 };
 
 MovieIdHandler::MovieIdHandler(
@@ -54,36 +52,7 @@ MovieIdHandler::MovieIdHandler(
   _mongodb_client_pool = mongodb_client_pool;
   _compose_client_pool = compose_client_pool;
   _rating_client_pool = rating_client_pool;
-  _extra_latency_ms = _ParseExtraLatency();
-}
-
-int MovieIdHandler::_ParseExtraLatency() {
-  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
-  if (extra_latency_env == nullptr) {
-    return 0;
-  }
-  
-  std::string latency_str(extra_latency_env);
-  
-  // Remove "ms" suffix if present
-  if (latency_str.length() >= 2 && 
-      latency_str.substr(latency_str.length() - 2) == "ms") {
-    latency_str = latency_str.substr(0, latency_str.length() - 2);
-  }
-  
-  try {
-    int latency_ms = std::stoi(latency_str);
-    if (latency_ms < 0) {
-      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
-      return 0;
-    }
-    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
-    return latency_ms;
-  } catch (const std::exception& e) {
-    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
-                 << ", setting to 0";
-    return 0;
-  }
+  _extra_latency_ms = ParseExtraLatency();
 }
 
 void MovieIdHandler::UploadMovieId(
@@ -93,11 +62,7 @@ void MovieIdHandler::UploadMovieId(
     const std::map<std::string, std::string> & carrier) {
 
   // Apply extra latency if configured
-  if (_extra_latency_ms > 0) {
-    LOG(debug) << "Adding extra latency of " << _extra_latency_ms 
-               << "ms for request " << req_id;
-    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
-  }
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -301,6 +266,9 @@ void MovieIdHandler::RegisterMovieId (
     const std::string &title,
     const std::string &movie_id,
     const std::map<std::string, std::string> & carrier) {
+
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);

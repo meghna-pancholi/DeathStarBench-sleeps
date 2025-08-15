@@ -3,9 +3,6 @@
 
 #include <iostream>
 #include <string>
-#include <thread>
-#include <cstdlib>
-#include <chrono> 
 
 #include <mongoc.h>
 #include <bson/bson.h>
@@ -17,28 +14,15 @@
 #include "../ClientPool.h"
 #include "../RedisClient.h"
 #include "../ThriftClient.h"
-
-// Forward declaration of the Redis and Thrift client wrappers
-namespace cpp_redis {
-class client;
-}
+#include "../utils.h"
 
 namespace media_service {
-
-// Corrected the client pool typedefs to match the types expected
-// by the microservice architecture. The ClientPool is templated on
-// a wrapper class, not the raw client.
-typedef ClientPool<RedisClient> RedisClientPool;
-typedef ClientPool<ThriftClient<ReviewStorageServiceClient>> ReviewStorageClientPool;
-
 class MovieReviewHandler : public MovieReviewServiceIf {
  public:
-  // Corrected the constructor signature to use the newly defined types.
   MovieReviewHandler(
-      RedisClientPool *redis_client_pool,
-      mongoc_client_pool_t *mongodb_client_pool,
-      ReviewStorageClientPool *review_client_pool);
-
+      ClientPool<RedisClient> *,
+      mongoc_client_pool_t *,
+      ClientPool<ThriftClient<ReviewStorageServiceClient>> *);
   ~MovieReviewHandler() override = default;
   void UploadMovieReview(int64_t, const std::string&, int64_t, int64_t,
                          const std::map<std::string, std::string> &) override;
@@ -47,51 +31,20 @@ class MovieReviewHandler : public MovieReviewServiceIf {
       const std::map<std::string, std::string> & carrier) override;
   
  private:
-  // Corrected member variable types to match the new typedefs.
-  RedisClientPool *_redis_client_pool;
+  ClientPool<RedisClient> *_redis_client_pool;
   mongoc_client_pool_t *_mongodb_client_pool;
-  ReviewStorageClientPool *_review_client_pool;
+  ClientPool<ThriftClient<ReviewStorageServiceClient>> *_review_client_pool;
   int _extra_latency_ms;
-  int _ParseExtraLatency();
 };
 
 MovieReviewHandler::MovieReviewHandler(
-    RedisClientPool *redis_client_pool,
-    mongoc_client_pool_t *mongodb_client_pool,
-    ReviewStorageClientPool *review_client_pool) {
+    ClientPool<RedisClient> *redis_client_pool,
+    mongoc_client_pool_t *mongodb_pool,
+    ClientPool<ThriftClient<ReviewStorageServiceClient>> *review_storage_client_pool) {
   _redis_client_pool = redis_client_pool;
-  _mongodb_client_pool = mongodb_client_pool;
-  _review_client_pool = review_client_pool;
-  _extra_latency_ms = _ParseExtraLatency();
-}
-
-int MovieReviewHandler::_ParseExtraLatency() {
-  const char* extra_latency_env = std::getenv("EXTRA_LATENCY");
-  if (extra_latency_env == nullptr) {
-    return 0;
-  }
-  
-  std::string latency_str(extra_latency_env);
-  
-  // Remove "ms" suffix if present
-  if (latency_str.length() >= 2 && 
-      latency_str.substr(latency_str.length() - 2) == "ms") {
-    latency_str = latency_str.substr(0, latency_str.length() - 2);
-  }
-  
-  try {
-    int latency_ms = std::stoi(latency_str);
-    if (latency_ms < 0) {
-      LOG(warning) << "EXTRA_LATENCY cannot be negative, setting to 0";
-      return 0;
-    }
-    LOG(info) << "EXTRA_LATENCY set to " << latency_ms << "ms";
-    return latency_ms;
-  } catch (const std::exception& e) {
-    LOG(warning) << "Invalid EXTRA_LATENCY value: " << extra_latency_env 
-                 << ", setting to 0";
-    return 0;
-  }
+  _mongodb_client_pool = mongodb_pool;
+  _review_client_pool = review_storage_client_pool;
+  _extra_latency_ms = ParseExtraLatency();
 }
 
 void MovieReviewHandler::UploadMovieReview(
@@ -101,17 +54,14 @@ void MovieReviewHandler::UploadMovieReview(
     int64_t timestamp,
     const std::map<std::string, std::string> & carrier) {
 
-  // Simulate extra latency
-  if (_extra_latency_ms > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
-  }
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
   TextMapWriter writer(writer_text_map);
   auto parent_span = opentracing::Tracer::Global()->Extract(reader);
-  // Corrected opentracing::ChildOf to pass a pointer to the context.
   auto span = opentracing::Tracer::Global()->StartSpan(
       "UploadMovieReview",
       { opentracing::ChildOf(parent_span->get()) });
@@ -138,7 +88,6 @@ void MovieReviewHandler::UploadMovieReview(
 
   bson_t *query = bson_new();
   BSON_APPEND_UTF8(query, "movie_id", movie_id.c_str());
-  // Corrected opentracing::ChildOf to pass a pointer to the context.
   auto find_span = opentracing::Tracer::Global()->StartSpan(
       "MongoFindMovie", {opentracing::ChildOf(&span->context())});
   mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
@@ -153,7 +102,6 @@ void MovieReviewHandler::UploadMovieReview(
         "timestamp", BCON_INT64(timestamp), "}", "]"
     );
     bson_error_t error;
-    // Corrected opentracing::ChildOf to pass a pointer to the context.
     auto insert_span = opentracing::Tracer::Global()->StartSpan(
         "MongoInsert", {opentracing::ChildOf(&span->context())});
     bool plotinsert = mongoc_collection_insert_one(
@@ -187,9 +135,8 @@ void MovieReviewHandler::UploadMovieReview(
     );
     bson_error_t error;
     bson_t reply;
-    // Corrected opentracing::ChildOf to pass a pointer to the context.
     auto update_span = opentracing::Tracer::Global()->StartSpan(
-        "MongoUpdate", {opentracing::ChildOf(&span->context())});
+        "MongoUpdate.", {opentracing::ChildOf(&span->context())});
     bool plotupdate = mongoc_collection_find_and_modify(
         collection, query, nullptr, update, nullptr, false, false,
         true, &reply, &error);
@@ -216,7 +163,6 @@ void MovieReviewHandler::UploadMovieReview(
   mongoc_collection_destroy(collection);
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
-  // Corrected client pool usage. Pop() returns the wrapper, no GetClient() call needed.
   auto redis_client_wrapper = _redis_client_pool->Pop();
   if (!redis_client_wrapper) {
     ServiceException se;
@@ -225,7 +171,6 @@ void MovieReviewHandler::UploadMovieReview(
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
-  // Corrected opentracing::ChildOf to pass a pointer to the context.
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisUpdate", {opentracing::ChildOf(&span->context())});
   auto num_reviews = redis_client->zcard(movie_id);
@@ -248,17 +193,14 @@ void MovieReviewHandler::ReadMovieReviews(
     const std::string& movie_id, int32_t start, int32_t stop,
     const std::map<std::string, std::string> & carrier) {
   
-  // Simulate extra latency
-  if (_extra_latency_ms > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(_extra_latency_ms));
-  }
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
   TextMapWriter writer(writer_text_map);
   auto parent_span = opentracing::Tracer::Global()->Extract(reader);
-  // Corrected opentracing::ChildOf to pass a pointer to the context.
   auto span = opentracing::Tracer::Global()->StartSpan(
       "ReadMovieReviews",
       { opentracing::ChildOf(parent_span->get()) });
@@ -268,10 +210,7 @@ void MovieReviewHandler::ReadMovieReviews(
     return;
   }
 
-  // The 'auto redis_client_wrapper' was declared twice, causing a conflict.
-  // We'll declare it once here and then check if it is null later.
   auto redis_client_wrapper = _redis_client_pool->Pop();
-  
   if (!redis_client_wrapper) {
     ServiceException se;
     se.errorCode = ErrorCode::SE_REDIS_ERROR;
@@ -279,7 +218,6 @@ void MovieReviewHandler::ReadMovieReviews(
     throw se;
   }
   auto redis_client = redis_client_wrapper->GetClient();
-  // Corrected opentracing::ChildOf to pass a pointer to the context.
   auto redis_span = opentracing::Tracer::Global()->StartSpan(
       "RedisFind", {opentracing::ChildOf(&span->context())});
   auto review_ids_future = redis_client->zrevrange(movie_id, start, stop - 1);
@@ -329,53 +267,43 @@ void MovieReviewHandler::ReadMovieReviews(
         "$slice", "[",
         BCON_INT32(0), BCON_INT32(stop),
         "]", "}", "}");
-    // Corrected opentracing::ChildOf to pass a pointer to the context.
     auto find_span = opentracing::Tracer::Global()->StartSpan(
         "MongoFindMovieReviews", {opentracing::ChildOf(&span->context())});
     mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(
         collection, query, opts, nullptr);
-    
+    find_span->Finish();
     const bson_t *doc;
     bool found = mongoc_cursor_next(cursor, &doc);
     if (found) {
-      // Corrected BSON iteration logic. The original logic was flawed and could
-      // lead to an infinite loop or incorrect data access.
-      bson_iter_t reviews_array_iter;
-      if (bson_iter_init_find(&reviews_array_iter, doc, "reviews") &&
-          BSON_ITER_HOLDS_ARRAY(&reviews_array_iter)) {
-        bson_iter_t review_document_iter;
-        bson_iter_t review_id_iter;
-        bson_iter_t timestamp_iter;
-        int idx = 0;
-        bson_iter_recurse(&reviews_array_iter, &review_document_iter);
-        while (bson_iter_next(&review_document_iter)) {
-          bson_iter_t review_fields_iter;
-          bson_iter_recurse(&review_document_iter, &review_fields_iter);
-
-          int64_t curr_review_id = 0;
-          int64_t curr_timestamp = 0;
-
-          // Find the review_id and timestamp within the sub-document
-          while (bson_iter_next(&review_fields_iter)) {
-            if (strcmp(bson_iter_key(&review_fields_iter), "review_id") == 0 &&
-                BSON_ITER_HOLDS_INT64(&review_fields_iter)) {
-              curr_review_id = bson_iter_int64(&review_fields_iter);
-            } else if (strcmp(bson_iter_key(&review_fields_iter), "timestamp") == 0 &&
-                       BSON_ITER_HOLDS_INT64(&review_fields_iter)) {
-              curr_timestamp = bson_iter_int64(&review_fields_iter);
-            }
-          }
-
-          if (idx >= mongo_start) {
-            review_ids.emplace_back(curr_review_id);
-          }
-          redis_update_map.insert(
-              {std::to_string(curr_timestamp), std::to_string(curr_review_id)});
-          idx++;
+      bson_iter_t iter_0;
+      bson_iter_t iter_1;
+      bson_iter_t review_id_child;
+      bson_iter_t timestamp_child;
+      int idx = 0;
+      bson_iter_init(&iter_0, doc);
+      bson_iter_init(&iter_1, doc);
+      while (bson_iter_find_descendant(&iter_0,
+                                       ("reviews." + std::to_string(idx)
+                                           + ".review_id").c_str(),
+                                       &review_id_child)
+          && BSON_ITER_HOLDS_INT64(&review_id_child)
+          && bson_iter_find_descendant(&iter_1,
+                                       ("reviews." + std::to_string(idx)
+                                           + ".timestamp").c_str(),
+                                       &timestamp_child)
+          && BSON_ITER_HOLDS_INT64(&timestamp_child)) {
+        auto curr_review_id = bson_iter_int64(&review_id_child);
+        auto curr_timestamp = bson_iter_int64(&timestamp_child);
+        if (idx >= mongo_start) {
+          review_ids.emplace_back(curr_review_id);
         }
+        redis_update_map.insert(
+            {std::to_string(curr_timestamp), std::to_string(curr_review_id)});
+        bson_iter_init(&iter_0, doc);
+        bson_iter_init(&iter_1, doc);
+        idx++;
       }
     }
-    // Removed the second find_span->Finish() call, as it was redundant.
     find_span->Finish();
     bson_destroy(opts);
     bson_destroy(query);
@@ -384,7 +312,6 @@ void MovieReviewHandler::ReadMovieReviews(
     mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
   }
 
-  // Corrected client pool usage. Pop() returns the wrapper.
   std::future<std::vector<Review>> review_future = std::async(
       std::launch::async, [&]() {
         auto review_client_wrapper = _review_client_pool->Pop();
@@ -394,8 +321,8 @@ void MovieReviewHandler::ReadMovieReviews(
           se.message = "Failed to connected to review-storage-service";
           throw se;
         }
-        auto review_client = review_client_wrapper->GetClient();
         std::vector<Review> _return_reviews;
+        auto review_client = review_client_wrapper->GetClient();
         try {
           review_client->ReadReviews(
               _return_reviews, req_id, review_ids, writer_text_map);
@@ -411,15 +338,14 @@ void MovieReviewHandler::ReadMovieReviews(
   std::future<cpp_redis::reply> zadd_reply_future;
   if (!redis_update_map.empty()) {
     // Update Redis
-    // We already have a redis_client_wrapper from the beginning of the function
+    redis_client_wrapper = _redis_client_pool->Pop();
     if (!redis_client_wrapper) {
       ServiceException se;
       se.errorCode = ErrorCode::SE_REDIS_ERROR;
       se.message = "Cannot connected to Redis server";
       throw se;
     }
-    auto redis_client = redis_client_wrapper->GetClient();
-    // Corrected opentracing::ChildOf to pass a pointer to the context.
+    redis_client = redis_client_wrapper->GetClient();
     auto redis_update_span = opentracing::Tracer::Global()->StartSpan(
         "RedisUpdate", {opentracing::ChildOf(&span->context())});
     redis_client->del(std::vector<std::string>{movie_id});
@@ -461,5 +387,6 @@ void MovieReviewHandler::ReadMovieReviews(
 }
 
 } // namespace media_service
+
 
 #endif //MEDIA_MICROSERVICES_MOVIEREVIEWHANDLER_H
