@@ -6,7 +6,8 @@ ports:
 
 container:
   command: UniqueIdService
-  image: yg397/media-microservices
+  image: meghnapancholi/dsb-media
+  imageVersion: sleeps
   name: unique-id-service
   ports:
     - containerPort: 9090

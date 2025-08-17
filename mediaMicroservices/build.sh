@@ -1,6 +1,6 @@
 #!/bin/bash
 
-docker build -t thrift-microservice-deps -f docker/thrift-microservice-deps/cpp/Dockerfile . 
+#docker build -t thrift-microservice-deps -f docker/thrift-microservice-deps/cpp/Dockerfile . 
 docker build -t media -f Dockerfile .
 SOCIAL_IMAGE_ID=$(docker images --format="{{.Repository}} {{.ID}}" | grep "^media " | cut -d' ' -f2)
 docker tag $SOCIAL_IMAGE_ID meghnapancholi/dsb-media:sleeps 

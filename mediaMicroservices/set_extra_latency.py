@@ -39,7 +39,21 @@ def update_extra_latency(service_name, latency_ms):
     )
     return
 
-  values["container"]["extraLatencyMs"] = latency_ms
+  if "env" not in values["container"]:
+    values["container"]["env"] = []
+
+  extra_latency_env = None
+  for env_var in values["container"]["env"]:
+    if env_var.get("name") == "EXTRA_LATENCY":
+      extra_latency_env = env_var
+      break
+
+  if extra_latency_env:
+    extra_latency_env["value"] = f"{latency_ms}ms"
+  else:
+    values["container"]["env"].append(
+        {"name": "EXTRA_LATENCY", "value": f"{latency_ms}ms"}
+    )
 
   try:
     with open(values_file, "w") as f:

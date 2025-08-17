@@ -7,9 +7,12 @@ configMaps:
   value: service-config
 container:
   command: ComposeReviewService
-  extraLatencyMs: 3
-  image: yg397/media-microservices
+  image: meghnapancholi/dsb-media
+  imageVersion: sleeps
   name: compose-review-service
+  env:
+  - name: EXTRA_LATENCY
+    value: "3ms"
   ports:
   - containerPort: 9090
 name: compose-review-service

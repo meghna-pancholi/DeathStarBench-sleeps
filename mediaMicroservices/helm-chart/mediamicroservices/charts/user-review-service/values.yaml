@@ -6,7 +6,8 @@ ports:
 
 container:
   command: UserReviewService
-  image: yg397/media-microservices
+  image: meghnapancholi/dsb-media
+  imageVersion: sleeps
   name: user-review-service
   ports:
     - containerPort: 9090

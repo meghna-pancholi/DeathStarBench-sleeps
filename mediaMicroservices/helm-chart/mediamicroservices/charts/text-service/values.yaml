@@ -6,7 +6,8 @@ ports:
 
 container:
   command: TextService
-  image: yg397/media-microservices
+  image: meghnapancholi/dsb-media
+  imageVersion: sleeps
   name: text-service
   ports:
     - containerPort: 9090

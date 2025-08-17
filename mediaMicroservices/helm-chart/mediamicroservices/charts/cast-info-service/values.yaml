@@ -6,7 +6,8 @@ ports:
 
 container:
   command: CastInfoService
-  image: yg397/media-microservices
+  image: meghnapancholi/dsb-media
+  imageVersion: sleeps
   name: cast-info-service
   ports:
     - containerPort: 9090
