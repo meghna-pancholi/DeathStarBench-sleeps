@@ -37,8 +37,8 @@ void TextHandler::UploadText(
     const std::string &text,
     const std::map<std::string, std::string> & carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -66,6 +66,9 @@ void TextHandler::UploadText(
     throw;
   }
   _compose_client_pool->Push(compose_client_wrapper);
+
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
 
   span->Finish();
 }

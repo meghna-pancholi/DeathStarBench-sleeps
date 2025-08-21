@@ -139,8 +139,8 @@ void UserHandler::RegisterUser(
     const std::string &password,
     const std::map<std::string, std::string> &carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -263,6 +263,9 @@ void UserHandler::RegisterUser(
   mongoc_collection_destroy(collection);
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
+
   span->Finish();
 }
 
@@ -272,8 +275,8 @@ void UserHandler::RegisterUserWithId(
     const std::string& password, int64_t user_id,
     const std::map<std::string, std::string> & carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   // Initialize a span
   TextMapReader reader(carrier);
@@ -362,6 +365,9 @@ void UserHandler::RegisterUserWithId(
   mongoc_collection_destroy(collection);
   mongoc_client_pool_push(_mongodb_client_pool, mongodb_client);
 
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
+
   span->Finish();
 }
 
@@ -370,8 +376,8 @@ void UserHandler::UploadUserWithUsername(
     const std::string &username,
     const std::map<std::string, std::string> & carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -404,6 +410,7 @@ void UserHandler::UploadUserWithUsername(
       &user_id_size,
       &memcached_flags,
       &memcached_rc);
+
   id_get_span->Finish();
   if (!user_id_mmc && memcached_rc != MEMCACHED_NOTFOUND) {
     ServiceException se;
@@ -553,6 +560,10 @@ void UserHandler::UploadUserWithUsername(
   memcached_pool_push(_memcached_client_pool, memcached_client);
 
   free(user_id_mmc);
+
+    // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
+
   span->Finish();
 }
 
@@ -561,8 +572,8 @@ void UserHandler::UploadUserWithUserId(
     int64_t user_id,
     const std::map<std::string, std::string> &carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -590,6 +601,9 @@ void UserHandler::UploadUserWithUserId(
   }
   _compose_client_pool->Push(compose_client_wrapper);
 
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
+
   span->Finish();
 
 }
@@ -602,8 +616,8 @@ void UserHandler::Login(
     const std::string &password,
     const std::map<std::string, std::string> &carrier) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   TextMapReader reader(carrier);
   std::map<std::string, std::string> writer_text_map;
@@ -947,6 +961,10 @@ void UserHandler::Login(
   free(salt_mmc);
   free(password_mmc);
   free(user_id_mmc);
+
+  // Apply extra latency if configured
+  ApplyExtraLatency(_extra_latency_ms);
+
   span->Finish();
 }
 

@@ -79,8 +79,8 @@ ComposeReviewHandler::ComposeReviewHandler(
 void ComposeReviewHandler::_ComposeAndUpload(
     int64_t req_id, const std::map<std::string, std::string> &writer_text_map) {
 
-  // Apply extra latency if configured
-  ApplyExtraLatency(_extra_latency_ms);
+  // // Apply extra latency if configured
+  // ApplyExtraLatency(_extra_latency_ms);
 
   std::string key_unique_id = std::to_string(req_id) + ":review_id";
   std::string key_movie_id = std::to_string(req_id) + ":movie_id";
